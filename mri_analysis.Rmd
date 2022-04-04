@@ -1,0 +1,576 @@
+---
+title: "MRI analysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+#Load packages
+library(tidyverse)
+library(readr)
+library(metafor)
+library(meta)
+library(readxl)
+library(grid)
+library(tidyr)
+library(flextable)
+library(boot)
+library(epikit)
+library(rmarkdown)
+library(dplyr)
+```
+
+## Prevalence of LGE in PLHIV
+```{r}
+#Begin Cleaning pipe chain
+##########################
+
+#Load excel file
+mri2 <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+mri2 <- mri2 %>% filter(scan == "cmr")
+
+#Create subset of data that contains LGE in HIV only
+  mri2 <- mri2%>% drop_na(lgehivn)
+
+#create labels
+#remove et al. from data
+mri2$study<-gsub("et al.","",as.character(mri2$study))
+labs <- paste(mri2$study, mri2$year)
+
+#set up data fram for proportion of PLHIV with LGE
+mri2 <- mri2 %>% select(study, year, country, income, design, excludedcad, hivnmri, lgehivn, cd4, age_hiv, excludedcad, stableart, qualityrating, nadircd4, smokehivprop)
+
+mri2 <- mri2 %>% rename(agehiv = age_hiv)
+
+lge.es <- escalc(xi = lgehivn, ni = hivnmri, measure = "PLO", data = mri2, slab= labs)
+lge.pes <- rma(yi, vi, data = lge.es)
+lge.pes.cd4 <- rma(yi, vi, data = lge.es, mods = ~ cd4)
+
+#write own transformation which is inverse of LOGIT * 100
+mytransf <- function(x)
+    (transf.ilogit(x)) * 100
+
+
+par(mfrow = c(2,1))
+
+
+forest(lge.pes, transf = mytransf,
+       mlab= "",
+       digits = 1, header= TRUE,
+       xlim = c(-100, 140),
+       ilab = cbind(mri2$lgehivn, mri2$hivnmri),
+       ilab.xpos = c(-45,-25),
+       xlab = "Prevalence of LGE (%)",
+       order = mri2$year,
+       colout = "blue",
+       col= "blue"
+      )
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-100, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(lge.pes$QE, digits=1, format="f")), ",p = ", .(formatC(lge.pes$QEp, digits=3, format="f")), "; ", I^2, " = ",
+     .(formatC(lge.pes$I2, digits=1, format="f")), "%)")))
+text(c(-45,-25), 17, c("LGE+", "N"), cex=0.75)
+
+mtext(c("A"), side = 3, line = 1)
+```
+
+### Subgroup income status
+```{r}
+dev.new()
+forest(lge.pes, transf=mytransf, refline = NA, order = lge.es$income,
+       ylim = c(-4, 27), digits = 1, header = "Study & year",
+       rows = c(4:14, 19:22),
+        ilab= cbind(lge.es$lgehivn, lge.es$hivn),
+       ilab.xpos=c(-50,-20),
+       xlab = "Prevalence of LGE (%)",
+       cex = 0.75,
+       mlab = mlabfun("RE model for all studies", lge.pes),
+       xlim = c(-140, 145))
+
+### set font expansion factor (as in forest() above) and use a bold font
+op <- par(cex=0.75, font=2)
+
+text(c(-50, -20), 26, c("LGE+", "N"), cex = 0.75)
+
+par(font = 4)
+
+text(-140, c(23.5,15.5), pos=4, c("Studies performed in UMIC",
+                               "Studies performed in HIC"))
+
+lge.pes.umic <- rma(yi, vi, data = lge.es, subset=income=="umic")
+lge.pes.hic <- rma(yi, vi, data = lge.es, subset=income=="hic")
+
+par(op)
+
+### add summary polygons for the three subgroups
+addpoly(lge.pes.umic, row=17, digits = 1, transf = mytransf, mlab=mlabfun("RE Model for Subgroup", lge.pes.umic))
+addpoly(lge.pes.hic, row= 2, digits = 1, transf = mytransf, mlab=mlabfun("RE Model for Subgroup", lge.pes.hic))
+
+
+### fit meta-regression model to test for subgroup differences
+res.income <- rma(yi, vi, mods = ~ income, data=lge.es)
+ 
+### add text for the test of subgroup differences
+text(-140, -3, pos=4, cex=0.75, bquote(paste("Test for Subgroup Differences: ",
+     Q[M], " = ", .(formatC(res.income$QM, digits=2, format="f")), ", df = ", .(res$p - 1),
+     ", p = ", .(formatC(res.income$QMp, digits=2, format="f")))))
+```
+
+
+### Subgroup analysis by CVD
+```{r}
+lge.pes.cvdexcluded <- rma(yi, vi, data = lge.es, subset=excludedcad=="yes", digits = 1)
+lge.pes.cvdincluded <- rma(yi, vi, data = lge.es, subset=excludedcad=="no", digits = 1)
+
+
+mlabfun <- function(text, lge.pes) {
+   list(bquote(paste(.(text),
+      " (Q = ", .(formatC(lge.pes$QE, digits=2, format="f")),
+      ", p ", .(metafor:::.pval(lge.pes$QEp, digits=2, showeq=TRUE, sep=" ")), "; ",
+      I^2, " = ", .(formatC(lge.pes$I2, digits=1, format="f")), "%, ",
+      tau^2, " = ", .(formatC(lge.pes$tau2, digits=2, format="f")), ")")))}
+
+
+mlabfun.include <- function(text, lge.pes.cvdincluded) {
+   list(bquote(paste(.(text),
+      " (Q = ", .(formatC(lge.pes.cvdincluded$QE, digits=1, format="f")),
+      ", df = ", .(lge.pes.cvdincluded$k - lge.pes.cvdincluded$p),
+      ", p ", .(metafor:::.pval(lge.pes.cvdincluded$QEp, digits=2, showeq=TRUE, sep=" ")), "; ",
+      I^2, " = ", .(formatC(lge.pes.cvdincluded$I2, digits=1, format="f")), "%, ",
+      tau^2, " = ", .(formatC(lge.pes.cvdincluded$tau2, digits=1, format="f")), ")")))}
+
+mlabfun.exclude <- function(text, lge.pes.cvdexcluded) {
+   list(bquote(paste(.(text),
+      " (Q = ", .(formatC(lge.pes.cvdexcluded$QE, digits=1, format="f")),
+      ", df = ", .(lge.pes.cvdexcluded$k - lge.pes.cvdexcluded$p),
+      ", p ", .(metafor:::.pval(lge.pes.cvdexcluded$QEp, digits=2, showeq=TRUE, sep=" ")), "; ",
+      I^2, " = ", .(formatC(lge.pes.cvdexcluded$I2, digits=1, format="f")), "%, ",
+      tau^2, " = ", .(formatC(lge.pes.cvdexcluded$tau2, digits=1, format="f")), ")")))}
+
+### set up forest plot (with 2x2 table counts added; the 'rows' argument is
+### used to specify in which rows the outcomes will be plotted)
+
+dev.new(
+)
+forest(lge.pes, transf=mytransf, refline = NA,
+       ylim = c(-4, 27), digits = 1,
+       xlim = c(-140, 145),
+       rows=c(3:7, 13:22),
+       ilab= cbind(lge.es$lgehivn, lge.es$hivn),
+       ilab.xpos=c(-80,-70),
+       order = lge.es$excludedcad,
+       psize = 1, cex = 0.75, header="Study",
+       cex.lab  = 0.75,
+       mlab=mlabfun("RE Model for All Studies", lge.pes),
+       xlab = "Prevalence of LGE (%)")
+
+op <- par(cex=0.75, font=2)
+text(c(-80, -70), 26, c("LGE", "N"), cex = 0.75)
+
+par(font=4)
+#Add text for subgroups
+text(-140, c(24,9), pos=4, c("Studies that excluded individuals with CVD",
+                               "Studies that did not exclude individuals with CVD"))
+
+par(op)
+addpoly(lge.pes.cvdexcluded, transf = mytransf, row=11.5, digits = 1,  mlab=mlabfun.exclude("RE Model for Subgroup", lge.pes.cvdexcluded))
+addpoly(lge.pes.cvdincluded, transf = mytransf, row=1.5, digits = 1, mlab= mlabfun.include("RE Model for Subgroup", lge.pes.cvdincluded))
+
+### fit meta-regression model to test for subgroup differences
+res <- rma(yi, vi, mods = ~ excludedcad, data=lge.es)
+ 
+### add text for the test of subgroup differences
+text(-140, -3, pos=4, cex=0.75, bquote(paste("Test for Subgroup Differences: ",
+     Q[M], " = ", .(formatC(res$QM, digits=2, format="f")), ", df = ", .(res$p - 1),
+     ", p = ", .(formatC(res$QMp, digits=2, format="f")))))
+
+```
+
+### Sensitivity analysis- removal of low quality studies
+```{r}
+#Updated meta estiamte with Frustaci removed and Breukman
+#Create dataframe with Frustaci and Breukman removed
+mriquality <- mri2 %>% 
+  filter(qualityrating != "poor")   
+labs <- paste(mriquality$study, mriquality$year)
+
+lge.hi <- escalc(xi = lgehivn, ni = hivnmri, measure = "PLO", data = mriquality, slab= labs)
+hi.pes <- rma(yi, vi, data = lge.hi)
+
+#write own transformation which is inverse of LOGIT * 100
+mytransf <- function(x)
+    (transf.ilogit(x)) * 100
+dev.new()
+forest(hi.pes, transf = mytransf,
+       mlab= "",
+       digits = 1, header= TRUE,
+       xlim = c(-100, 140),
+       ilab = cbind(mriquality$lgehivn, mriquality$hivnmri),
+       ilab.xpos = c(-45,-25),
+       xlab = "Prevalence of LGE (%)",
+       order = mriquality$year,
+       col= "blue"
+      )
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-100, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(hi.pes$QE, digits=1, format="f")), ",p = ", .(formatC(hi.pes$QEp, digits=3, format="f")), "; ", I^2, " = ",
+     .(formatC(hi.pes$I2, digits=1, format="f")), "%)")))
+text(c(-45,-25), 17, c("LGE+", "N"), cex=0.75)
+```
+
+
+## Risk of LGE
+```{r, warning=FALSE, echo = FALSE, fig.align='center'}
+# Load data with odds ratios
+ormri <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+
+ormri <- ormri %>% filter(scan == "cmr")
+
+ormri <- ormri %>% select(study, year,hivnmri, lgehivn, nolgehivn, controlnmri, lgecontroln, 
+                          nolgecontroln, or.lge, pval.lge, ci.lb.lge, ci.ub.lge, adjust)
+
+#Remove et al.
+ormri$study<-gsub("et al.","",as.character(ormri$study))
+
+ormri <- ormri %>% drop_na(lgecontroln)
+
+ormri <- ormri %>%
+  rename(hpos = lgehivn, hneg = nolgehivn, cpos = lgecontroln, 
+         cneg = nolgecontroln, hiv.n = hivnmri, con.n = controlnmri, or = or.lge, 
+         pval = pval.lge, ci.lb= ci.lb.lge, ci.ub = ci.ub.lge) 
+
+#create labels
+labs <- paste(ormri$study, ormri$year)
+
+# Remove Wu and Shuldiner data for label
+#Create a second DF to allow for labels to be added to the forest plot
+ormri1 <- ormri
+ormri[c(1:2), c(3:8)] <- NA
+ormri
+
+# Calcuate odds ratios using escalc 
+es.orlge <- escalc(measure= "OR", ai = hpos, bi = hneg, ci = cpos,
+              di = cneg, 
+              slab= labs,
+              data = ormri)
+
+
+
+#Replace the missing values with the log odds ratios in Wu et al and Shuldiner
+es.orlge$yi <- replmiss(es.orlge$yi, log(es.orlge$or))
+# Convert the p-values into z values
+es.orlge$zi <- sign(es.orlge$yi) * qnorm(es.orlge$pval/2, lower.tail=FALSE)
+# Test statistics can be converted to standard errors
+es.orlge$sei <- es.orlge$yi / es.orlge$zi
+# CI bounds can be converted to SE
+es.orlge$sei <- replmiss(es.orlge$sei, with(es.orlge, (log(ci.ub) - log(ci.lb))/(2*1.96)))
+# Missing values with the vi variable can be replaced
+es.orlge$vi <- replmiss(es.orlge$vi, es.orlge$sei^2)
+# Delete variables
+es.orlge$zi <- es.orlge$sei <- NULL
+
+#Random effects model
+res.or <- rma(yi, vi, data = es.orlge)
+predict(res.or, transf=exp, digits=2)
+
+
+# Forest plot of odds ratio
+
+
+forest(res.or,
+       addpred=TRUE, header=TRUE,
+       atransf=exp,
+       order = ormri$year,
+       xlim = c(-14,11),
+      ilab=cbind(ormri1$hpos, ormri1$hneg, 
+                 ormri1$cpos, ormri1$cneg),
+       ilab.xpos=c(-7.5,-6.25,-4.25,-3),
+      mlab = "",
+      digits = 2, cex = 0.75,
+      col = "blue",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 100))) 
+
+
+#Add text to label columns
+text(c(-7.5,-6.25,-4.25,-3), 10.5, c("LGE+", "LGE-", "LGE+", "LGE-"), cex=0.75)
+text(c(-6.875, -3.625), 11.5, c("HIV +", "HIV -"), font =2, cex = 0.75)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-13.5, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res.or$QE, digits=2, format="f")), ", df = ", .(res.or$k - res.or$p),
+     ", p = ", .(formatC(res.or$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res.or$I2, digits=1, format="f")), "%)")))
+
+mtext(c("B"), side = 3, line = 1)
+```
+
+
+```{r, warning=FALSE, echo = FALSE, fig.align='center'}
+#Sensitivity analysis with studies that did not adjust removed:Ntusi, luetkens
+res.or.sens <- rma(yi, vi, data = es.orlge, subset= (adjust=="yes"))
+dev.new()
+forest(res.or.sens, atransf= exp, header = TRUE,
+       xlim = c(-14,11),
+      ilab=cbind(ormri1$hpos, ormri1$hneg, 
+                 ormri1$cpos, ormri1$cneg),
+       ilab.xpos=c(-7.5,-6.25,-4.25,-3),
+      mlab = "",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 100)))
+#Add text to label columns
+text(c(-7.5,-6.25,-4.25,-3), 8.5, c("LGE+", "LGE-", "LGE+", "LGE-"), cex=0.75)
+text(c(-6.875, -3.625), 9.4, c("HIV+", "HIV-"), font =2)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-13.5, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res.or.sens$QE, digits=2, format="f")), ", df = ", .(res.or.sens$k - res.or.sens$p),
+     ", p = ", .(formatC(res.or.sens$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res.or.sens$I2, digits=1, format="f")), "%)")))
+```
+
+## Extracellular volume fraction analysis
+```{r}
+# create new dataframe for analysis
+ecv <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+ecv <- ecv %>% filter(scan=="cmr")
+ecv <- ecv %>% select(study, year, hivnmri, controlnmri,
+                      ecvfracmean_hiv, ecvfrachiv_sd, ecvfracmean_con, ecvfracctonrol_sd) %>%
+  drop_na(ecvfracmean_con)
+
+#Create labels and remove et al.
+#Remove et al.
+ecv$study<-gsub("et al.","",as.character(ecv$study))
+#create labels
+labs <- paste(ecv$study, ecv$year)
+
+
+# Calculate effect size
+es.ecv <- escalc(measure = "MD", m1i = ecvfracmean_hiv, sd1i = ecvfrachiv_sd, n1i = hivnmri, n2i = controlnmri, 
+                 m2i = ecvfracmean_con, sd2i = ecvfracctonrol_sd, data = ecv, slab = labs)
+
+res.ecv <- rma(yi, vi, data = es.ecv)
+
+forest(res.ecv, 
+       addpred=TRUE, header= c("Study", "Mean Difference [95% CI]"),
+       order = ecv$year,
+       mlab = "",
+       ilab = cbind(ecv$ecvfracmean_hiv, ecv$ecvfracmean_con),
+       ilab.xpos = c(-4.5, -2),
+       xlim= c(-10, 14),
+       xlab = "Mean difference in ECV (%)")
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-10, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res.ecv$QE, digits=2, format="f")), ",
+     p = ", .(formatC(res.ecv$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res.ecv$I2, digits=1, format="f")), "%)")))
+
+#Add text to label columns
+text(c(-4.5, -2), 9, c("HIV+", "HIV-"), cex=0.75)
+text(c(-3.25), 9.75, c("Mean ECV"), cex = 0.75, font = 2)
+```
+## T1 time analysis
+```{r}
+t1 <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+t1 <- t1 %>% filter(scan=="cmr") %>%
+  select(study, year, hivnmri, controlnmri,
+                      t1_mean_hiv, t1_hiv_sd, t1_median_hiv, t1_control_mean, t1_control_sd, t1_control_median)%>%
+  drop_na(t1_control_mean)
+
+t1$t1_mean_hiv <- round(t1$t1_mean_hiv, digits=1)
+t1$t1_control_mean <- round(t1$t1_control_mean, digits=1)
+
+#Create labels and remove et al.
+#Remove et al.
+t1$study<-gsub("et al.","",as.character(t1$study))
+
+#create labels
+labs <- paste(t1$study, t1$year)
+
+
+# Calculate effect size
+es.t1 <- escalc(measure = "MD", m1i = t1_mean_hiv, sd1i = t1_hiv_sd, n1i = hivnmri, n2i = controlnmri, 
+                 m2i = t1_control_mean, sd2i = t1_control_sd, data = t1, slab = labs)
+
+res.t1 <- rma(yi, vi, data= es.t1)
+
+forest(res.t1, 
+       addpred=TRUE, header= c("Study", "Mean Difference [95% CI]"),
+       order = t1$year,
+       mlab = "",
+       ilab = cbind(t1$t1_mean_hiv, t1$t1_control_mean),
+       digits = 1,
+       xlim = c(-180,200),
+       ilab.xpos = c(-80, -40),
+       xlab = "Mean difference in T1 (msec)")
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-160, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res.t1$QE, digits=2, format="f")), ",
+     p = ", .(formatC(res.t1$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res.t1$I2, digits=1, format="f")), "%)")))
+#Add text to label columns
+text(c(-80, -40), 9.75, c("PLHIV", "Control"), cex=0.75)
+text(c(-60), 10.5, c("T1 time"), cex = 0.75, font = 2)
+  
+
+```
+
+## Heterogeneity
+
+
+## Meta regressions for LGE prevalence
+
+```{r}
+dev.new()
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE))
+# meta analysis of proportions using metaprop
+lge <-  metaprop(event = mri2$lgehivn, 
+                   n = mri2$hivnmri,
+                   studlab = study,
+                   data = mri2,
+                   method = "Inverse",#Inverse variance method
+                   sm = "PLOGIT", #Log transformation of proportions
+                   random = TRUE,#random effects meta analysis
+                   fixed = FALSE,
+                   title = "LGE prevalence",
+                   pscale = 100,
+                   digits = 1)
+
+### Mean CD4 count
+
+#For mean CD4, Ntusi et al. do not present a CD4 count, the same cohort is included in Holloway et al.
+#Therefore the meta analysis of prevalence will be repeated with Holloway instead of Ntusi
+
+#Meta analysis of prevalence of LGE (Hollloway replacing NTUSI)
+
+mricd4 <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "mricd4") #read in new excel with holloway
+
+#Create subset of data that contains LGE in HIV only
+mricd4 <- mricd4 %>% drop_na(lgehivn)
+
+#Perform meta analysis of proportions
+cd4 <- metaprop(event = mricd4$lgehivn, 
+                   n = mricd4$hivnmri,
+                   studlab = paper,
+                   data = mricd4,
+                   method = "Inverse",#Inverse variance method
+                   sm = "PLOGIT", #Log transformation of proportions
+                   random = TRUE,#random effects meta analysis
+                   fixed = FALSE,
+                   title = "LGE prevalence",
+                   pscale = 100,
+                   digits = 1)
+
+
+# Mixed effects model meta regression
+lgecd4.2 <- metareg(cd4, ~ cd4mean,
+                       hakn = TRUE,
+                       method = "DL",
+                       pscale = 100,
+                       digits = 2,
+                    studlab = TRUE)
+
+#plot
+
+regplot(lgecd4.2, 
+        transf=mytransf, 
+        ylim = c(0,100),
+        ylab = "Prevalence of LGE (%)",
+        xlab = "Mean CD4 count (cells/microL)",
+        ci= TRUE,
+        pi = FALSE,
+        label = FALSE)
+mtext(c("A"), side = 3, line = 1)
+
+# Mixed effects model meta regression
+lgeage <- metareg(lge, ~ agehiv,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2)
+
+regplot(lgeage, 
+        transf=mytransf, 
+        ylim = c(0,100),
+        ylab = "Prevalence of LGE (%)",
+        xlab = "Age (years)",
+        ci= TRUE,
+        pi = FALSE)
+
+mtext(c("B"), side = 3, line = 1)
+
+#Smokers
+
+# Mixed effects model meta regression
+lgesmoke <- metareg(lge, ~ smokehivprop,
+                       hakn = TRUE,
+                       digits = 2)
+
+
+regplot(lgesmoke, 
+        transf=mytransf, 
+        ylim = c(0,100),
+        ylab = "Prevalence of LGE (%)",
+        xlab = "Proportion of smokers in study population(%)",
+        ci= TRUE,
+        label = FALSE,
+        pi = FALSE)
+mtext(c("C"), side = 3, line = 1)
+```
+
+### Summary of Meta-Regressions
+
+```{r, echo=FALSE}
+mrireg <- tibble(
+    variable = c("Age", "CD4 Count", "Proportion of Smokers"),
+    no.studies = c(lgeage$k, lgecd4.2$k, lgesmoke$k),
+    regression.coefficent = c(lgeage$b[[2]], lgecd4.2$b[[2]], lgesmoke$b[[2]]),
+    ci.lower = c(lgeage$ci.lb[[2]], lgecd4.2$ci.lb[[2]], lgesmoke$ci.lb[[2]]),
+    ci.upper = c(lgeage$ci.ub[[2]], lgecd4.2$ci.ub[[2]], lgesmoke$ci.ub[[2]]),
+    p.value = c(lgeage$pval[[2]], lgecd4.2$pval[[2]], lgesmoke$pval[[2]]),
+    R2 = c(lgeage$R2, lgecd4.2$R2, lgesmoke$R2)) %>%
+  mutate(across(where(is.numeric), round, digits = 3))
+mrireg <- flextable(mrireg) %>%
+  theme_vanilla()%>%
+  set_header_labels(
+    variable = "Variable",
+    no.studies = "N studies",
+    regression.coefficent = "Regression Coefficent",
+    ci.lower = "95% CI lower",
+    ci.upper = "95% CI upper",
+    p.value = "P Value",
+    R2 = "R Squared")%>%
+  autofit()
+mrireg
+```
+
+
+# Funnell Plots MRI
+```{r}
+
+funnel(lge.pes, atransf = mytransf, xlab = "Prevalence of LGE (%)", digits = 1)
+mtext("A", side =3, line = 1)
+
+regtest(lge.pes, model="lm", predictor="sei", digits = 1)
+
+```
+
+
+
+
+
+
+

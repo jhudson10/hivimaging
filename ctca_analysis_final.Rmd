@@ -1,0 +1,710 @@
+---
+title: "update_ctca_analysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+#Load packages
+library(tidyverse)
+library(readr)
+library(metafor)
+library(meta)
+library(readxl)
+library(grid)
+library(tidyr)
+library(flextable)
+library(boot)
+library(epikit)
+library(rmarkdown)
+```
+
+#Prevalence of coronary plaque
+
+```{r, warning=FALSE, echo = FALSE}
+#Begin Cleaning pipe chain
+##########################
+
+#Load excel file
+ct <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+#Create database with only studies for CTCA with filter
+ct <- ct %>%
+  filter(scan== "ctca") %>%
+  drop_na(anyplaque_n_hiv)
+#Drop d'abramo & duarte
+ct <- ct[-c(3,6,9),]
+#create labels
+#remove et al. from data
+ct$study<-gsub("et al.","",as.character(ct$study))
+labs <- paste(ct$study, ct$year)
+
+#set up data fram for proportion of PLHIV with LGE
+ct <- ct %>% select(study, year, country, income, design, excludedcad, hivn_ct, anyplaque_n_hiv, cd4, age_hiv, excludedcad, stableart, qualityrating)
+
+
+
+any.es <- escalc(xi = anyplaque_n_hiv, ni = hivn_ct, measure = "PLO", data = ct, slab= labs)
+any.pes <- rma(yi, vi, data = any.es)
+
+#write own transformation which is inverse of LOGIT * 100
+mytransf <- function(x)
+    (transf.ilogit(x)) * 100
+
+par(mfrow=c(2,2))
+forest(any.pes, transf = mytransf,
+       mlab= "",
+       digits = 1, header= TRUE,
+       ilab = cbind(ct$anyplaque_n_hiv, ct$hivn_ct),
+       ilab.xpos = c(-45,-25),
+       xlim = c(-110, 150),
+       xlab = "Prevalence of Coronary Plaque (%)",
+       order = ct$year)
+
+text(c(-45,-25), 14, c("Cases", "N"), cex=0.75)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-110, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(any.pes$QE, digits=2, format="f")), ",p = ", .(formatC(any.pes$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(any.pes$I2, digits=1, format="f")), "%)")))
+
+mtext(c("A"), side = 3, line = 1)
+
+
+```
+
+
+# Risk of coronary plaque
+```{r}
+
+#new analysis using the correct database
+
+# Load data with odds ratios
+#Load excel file
+or.any <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+#Create database with only studies for CTCA with filter
+or.any <- or.any %>%
+  filter(scan== "ctca") %>%
+  drop_na(anyplaque_n_hiv)
+
+
+#Drop d'abramo & duarte
+or.any <- or.any[-c(3,10),]
+
+
+
+#set up data fram for proportion of PLHIV with LGE
+or.any <- or.any %>% select(study, year, hivn_ct, anyplaque_n_hiv, controln_ct, anyplaque_n_con, or_any, pval_any, ci.lb_any, ci.ub_any, adjust)
+
+or.any <- or.any %>% 
+  drop_na(anyplaque_n_con)%>% #Drop studies with NA in control group
+  mutate(
+    hneg = (hivn_ct - anyplaque_n_hiv),
+    cneg = (controln_ct - anyplaque_n_con)
+  ) %>%
+  rename(hpos = anyplaque_n_hiv, cpos = anyplaque_n_con, 
+         hiv.n = hivn_ct, con.n = controln_ct, or = or_any, 
+         pval = pval_any, ci.lb= ci.lb_any, ci.ub = ci.ub_any) %>%
+  select(study, year, hiv.n, hpos, hneg, con.n, cpos, cneg, or, pval,
+         ci.lb, ci.ub, adjust)
+
+#Remove Lai 1
+or.any[c(4), c(3:7)] <- NA
+
+#create branch off df for labels
+or.anylabs <- or.any
+
+#remove values from df for escalc
+or.any[c(2, 5,4, 7), c(3:8)] <- NA
+
+#create labels
+#remove et al. from data
+or.any$study<-gsub("et al.","",as.character(or.any$study))
+labs <- paste(or.any$study, or.any$year)
+
+# Calcuate odds ratios using escalc 
+es <- escalc(measure= "OR", ai = hpos, bi = hneg, ci = cpos,
+              di = cneg, 
+              slab= labs,
+              data = or.any)
+
+#Replace the missing values withthe log odds ratios 
+
+es$yi <- replmiss(es$yi, log(es$or))
+# Convert the p-values into z values
+es$zi <- sign(es$yi) * qnorm(es$pval/2, lower.tail=FALSE)
+# Test statistics can be converted to standard errors
+es$sei <- es$yi / es$zi
+# CI bounds can be converted to SE
+es$sei <- replmiss(es$sei, with(es, (log(ci.ub) - log(ci.lb))/(2*1.96)))
+# Missing values with the vi variable can be replaced
+es$vi <- replmiss(es$vi, es$sei^2)
+# Delete variables
+es$zi <- es$sei <- NULL
+
+
+
+pes <- rma(yi, vi, data = es)
+
+
+# Forest plot of odds ratio
+forest(pes,
+       addpred=TRUE, header=TRUE,
+       atransf=exp,
+       order = or.any$year,
+       xlim= c(10, -13),
+      ilab=cbind(or.anylabs$hpos, or.anylabs$hneg, 
+                 or.anylabs$cpos, or.anylabs$cneg),
+       ilab.xpos=c(-7.3,-6.0,-4.3,-3.0),
+      mlab = "",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 30)))
+
+#Add text to label columns
+text(c(-7.3,-6.0,-4.3,-3.0), 11.5, c("Pos", "Neg", "Pos", "Neg"), cex=0.75)
+text(c(-6.65, -3.65), 12.5, c("HIV+", "HIV-"), font =2, cex = 0.75)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-12.9, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(pes$QE, digits=2, format="f")), ", df = ", .(pes$k - pes$p),
+     ", p = ", .(formatC(pes$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(pes$I2, digits=1, format="f")), "%)")))
+mtext("B", side= 3, line= 1)
+```
+
+```{r}
+# Sensitivity analysis with removal of papers that did not adjust.
+dev.new()
+# Remove abdel, fitch, li
+pes2 <- rma(yi, vi, data=es, subset = (adjust == "yes"))
+forest(pes2, addpred=TRUE, header=TRUE, atransf=exp, xlim= c(10,-13),
+      ilab=cbind(or.anylabs$hpos, or.anylabs$hneg, 
+                 or.anylabs$cpos, or.anylabs$cneg),
+      ilab.xpos=c(-7.3,-6.0,-4.3,-3.0), mlab = "", xlab = c("Odds Ratio"), at=log(c(0.1, .25, 1, 10, 100)))
+
+#Add text to label columns
+text(c(-7.3,-6.0,-4.3,-3.0), 9.5, c("Pos", "Neg", "Pos", "Neg"), cex=0.75)
+text(c(-6.65, -3.65), 10.5, c("PLHIV", "Controls"), font =2)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-12.9, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res.2.sens$QE, digits=2, format="f")), ", df = ", .(res.2.sens$k - res.2.sens$p),
+     ", p = ", .(formatC(res.2.sens$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res.2.sens$I2, digits=1, format="f")), "%)")))
+```
+
+## Heterogeneity evaluation of prevalence of any coronary plaque
+### CVD inclusion criteria
+Sensitivity analysis excluding two studies that did not exclude patients with cardiovascular disease.
+```{r, warning=FALSE, echo=FALSE}
+# Presence of any coronary plaque based on whether study excluded patients with CVD
+# This has to be a sensitivity analysis as only 2 studies did NOT exclude (Miller 15, Senoner 19)
+
+#Create a subset of studies only EXCLUDING cvd
+ctcvd <- subset(ct, excludedcad=="yes")
+ctcvd <- ctcvd %>% drop_na(anyplaque_n_hiv)
+#set up data fram for proportion of PLHIV with LGE
+ctcvd <- ctcvd %>% select(study, year, country, income, design, excludedcad, hivn_ct, anyplaque_n_hiv, cd4, age_hiv, excludedcad, stableart, qualityrating)
+#remove Lai, dabramo, duarte
+ctcvd <- ctcvd[-c(3,6,8),]
+#remove et al. from data
+ctcvd$study<-gsub("et al.","",as.character(ctcvd$study))
+labs <- paste(ctcvd$study, ctcvd$year)
+ctcvd
+
+any.es.cvd <- escalc(xi = anyplaque_n_hiv, ni = hivn_ct, measure = "PLO", data = ctcvd, slab= labs)
+any.pes.cvd <- rma(yi, vi, data = any.es.cvd)
+
+#write own transformation which is inverse of LOGIT * 100
+mytransf <- function(x)
+    (transf.ilogit(x)) * 100
+
+
+forest(any.pes.cvd, transf = mytransf,
+       mlab= "",
+       digits = 1, header= TRUE,
+       ilab = cbind(ctcvd$anyplaque_n_hiv, ctcvd$hivn_ct),
+       ilab.xpos = c(-45,-25),
+       xlim = c(-110, 150),
+       xlab = "Prevalence of Coronary Plaque (%)",
+       order = ctcvd$year)
+
+text(c(-45,-25), 14, c("Cases", "N"), cex=0.75)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-110, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(any.pes.cvd$QE, digits=2, format="f")), ",p = ", .(formatC(any.pes.cvd$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(any.pes.cvd$I2, digits=1, format="f")), "%)")))
+
+
+
+
+```
+
+
+```{r, warning=FALSE, echo=FALSE}
+anycvd <- metaprop(event = anyplaque_n_hiv, 
+                   n = hivn_ct,
+                   studlab = study,
+                   data = ctcvd,
+                   method = "Inverse",#Inverse variance method
+                   sm = "PLOGIT", #Log transformation of proportions
+                   random = TRUE,#random effects meta analysis
+                   fixed = FALSE,
+                   pscale = 100,
+                   digits = 1)
+forest(anycvd, 
+            rightcols=FALSE,
+            leftcols=c("studlab", "event", "n", "effect", "ci"),
+            leftlabs = c("Study", "Cases", "Total", "Prevalence", "95% C.I."),
+            xlim= c(0,110),
+            xlab = c("Prevalence of any coronary plaque (%)"),
+            smlab = "",
+            digits = 1,
+            squaresize = 1,
+            weight.study = "fixed",
+            sortvar = year,
+            fontsize = 10,
+            fs.hetstat = 9)
+          
+```
+
+
+
+
+### Metaregressions
+
+Meta regression of any coronary plaque against average age of the study population
+
+```{r, warning=FALSE, echo=FALSE}
+# Use metaprop to enable metaregressions. Repeat meta analysis of proportions using metaprop.
+
+
+#Load excel file
+ct1 <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+#Create database with only studies for CTCA with filter
+ct1 <- ct1 %>%
+  filter(scan== "ctca") %>%
+  drop_na(anyplaque_n_hiv)
+
+#Drop d'abramo & duarte
+ct1 <- ct1[-c(3,6,10),]
+#create labels
+#remove et al. from data
+ct1$study<-gsub("et al.","",as.character(ct1$study))
+labs <- paste(ct1$study, ct1$year)
+
+#set up data fram for proportion of PLHIV with LGE
+ct1 <- ct1 %>% select(study, year, country, income, design, excludedcad, hivn_ct, anyplaque_n_hiv, cd4, age_hiv, excludedcad, stableart, qualityrating, femalehivprop, bmihiv, smokehivprop, age_hiv, artprop, art_time, cd4, nadircd4)
+
+ct1$cd4 <- as.numeric(ct1$cd4)
+ct1$art_time <- as.numeric(ct1$art_time)
+ct1$bmihiv <- as.numeric(ct1$bmihiv)
+
+any <- metaprop(event = anyplaque_n_hiv, 
+                   n = hivn_ct,
+                   studlab = study,
+                   data = ct1,
+                   method = "Inverse",#Inverse variance method
+                   sm = "PLOGIT", #Log transformation of proportions
+                   random = TRUE,#random effects meta analysis
+                   fixed = FALSE,
+                   pscale = 100,
+                   digits = 1)
+
+anyage <- metareg(any, ~ age_hiv, hakn = TRUE, method = "DL",
+                       digits = 2,
+                  subset= c(1:11)) #remove lo et al. from meta regression
+
+# Mixed effects model meta regression
+anyfemale <- metareg(any, ~ femalehivprop,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2)
+# Meta regression of the proportion of smokers in the study population
+# Not reported by: DETTORE
+anysmoke <- metareg(any, ~ smokehivprop,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2) 
+# Meta regression of BMI of study population against any coronary plaque
+
+anybmi <- metareg(any, bmihiv,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2,
+                  subset= c(1:11)) #remove lo et al. from meta regression)
+
+
+anyart <- metareg(any, ~ artprop,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2)
+
+anytime <- metareg(any, ~ art_time,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2,
+                   subset= c(1:11)) #remove lo et al. from meta regression)
+
+
+anycd4 <- metareg(any, ~ cd4,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2,
+                        subset= c(1:11)) #remove lo et al. from meta regression)
+
+# Meta regression of coronary plaque by mean nadir CD4 in study population
+# Not reported by Hoffman, Jeudy
+
+anynadir <- metareg(any, ~ nadircd4,
+                       hakn = TRUE,
+                       method = "DL",
+                       digits = 2,
+                    subset= c(1:11)) #remove lo et al. from meta regression)
+
+
+
+dev.new()
+par(mfrow=c(4,2),oma=c(2,2,0,0))
+regplot(anyage, 
+        transf=mytransf, 
+        main = "A",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Age (years)",
+        ci= TRUE,
+        label = FALSE,
+        pi = FALSE)
+regplot(anyfemale, 
+        transf= mytransf, 
+        main = "B",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Proportion of women in study population (%)",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anysmoke, 
+        transf=mytransf, 
+        main = "C",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Proportion of smokers in study population (%)",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anybmi, 
+        transf= mytransf, 
+        main = "D",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Mean BMI in study population (kg/m2)",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anyart, 
+        transf= mytransf,
+        main = "E",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Proportion of HIV+ on ART",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anytime, 
+        transf=mytransf, 
+        main = "F",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Mean duration on ART (years)",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anycd4, 
+        transf= mytransf,
+        main = "G",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Mean CD4 count (cells/microl)",
+        ci= TRUE,
+        pi = FALSE)
+regplot(anynadir, 
+        transf=mytransf, 
+        main = "H",
+        ylim = c(0,100),
+        ylab = "",
+        xlab = "Nadir CD4 count (cells/microl)",
+        ci= TRUE,
+        pi = FALSE)
+mtext("Prevalence of coronary plaque (%)",side=2,line=0,outer=TRUE,las=0)
+```
+
+
+### Summary of Meta Regressions of any coronary plaque
+
+```{r, echo=FALSE, warning=FALSE}
+regresult <- tibble(
+    Variable = c("Age", "Proportion female", "Proportion smokers", "Mean BMI", "Proportion on ART", "Time on ART", "Mean CD4", "Nadir CD4"),
+    no.studies = c(anyage$k, anyfemale$k, anysmoke$k, anybmi$k, anyart$k, anytime$k, anycd4$k, anynadir$k),
+    regression.coefficent = c(anyage$b[[2]], anyfemale$b[[2]], anysmoke$b[[2]], anybmi$b[[2]], anyart$b[[2]], anytime$b[[2]], anycd4$b[[2]], anynadir$b[[2]]),
+    ci.lower = c(anyage$ci.lb[[2]], anyfemale$ci.lb[[2]], anysmoke$ci.lb[[2]], anybmi$ci.lb[[2]], anyart$ci.lb[[2]], anytime$ci.lb[[2]], anycd4$ci.lb[[2]], anynadir$ci.lb[[2]]),
+    ci.upper = c(anyage$ci.ub[[2]], anyfemale$ci.ub[[2]], anysmoke$ci.ub[[2]], anybmi$ci.ub[[2]], anyart$ci.ub[[2]], anytime$ci.ub[[2]], anycd4$ci.ub[[2]], anynadir$ci.ub[[2]]),
+    p.value = c(anyage$pval[[2]], anyfemale$pval[[2]], anysmoke$pval[[2]], anybmi$pval[[2]], anyart$pval[[2]], anytime$pval[[2]], anycd4$pval[[2]], anynadir$pval[[2]]),
+    R2 = c(anyage$R2, anyfemale$R2, anysmoke$R2, anybmi$R2, anyart$R2, anytime$R2, anycd4$R2, anynadir$R2),
+      )%>%
+  mutate(across(where(is.numeric), round, digits = 2))
+regresult <- regresult %>% flextable() %>%
+  theme_vanilla()%>%
+  set_header_labels(
+    variable = "Variable",
+    no.studies = "N studies",
+    regression.coefficent = "Regression Coefficent",
+    ci.lower = "95% CI lower",
+    ci.upper = "95% CI upper",
+    p.value = "P Value",
+    R2 = "R Squared")
+print(regresult, preview= "docx")
+
+```
+
+## Exploration of heterogeneity by study design
+
+### Sensitivity analysis with studies of poor quality excluded
+```{r, warning=FALSE, echo=FALSE}
+#Updated meta estiamte with Frustaci removed and Breukman
+#Create dataframe with poor quality studies removed
+ctqual <-  ctany %>% 
+  filter(quality != "poor")   
+
+qual <- metaprop(event = anyplaque_n_hiv, 
+                   n = hivn_ct,
+                   studlab = study,
+                   data = ctqual,
+                   method = "Inverse",#Inverse variance method
+                   sm = "PLOGIT", #Log transformation of proportions
+                   random = TRUE,#random effects meta analysis
+                   fixed = FALSE,
+                   pscale = 100,
+                   digits = 1)
+forest(qual, 
+            rightcols=FALSE,
+            leftcols=c("studlab", "event", "n", "effect", "ci"),
+            leftlabs = c("Study", "Cases", "Total", "Prevalence", "95% C.I."),
+            xlim= c(0,110),
+            smlab = "",
+       xlab = c("Prevalence of any coronary plaque (%)"),
+            digits = 1,
+            squaresize = 1,
+            weight.study = "fixed",
+            sortvar = year,
+            fontsize = 10,
+            fs.hetstat = 9)
+```
+
+# 50/70% Stenosis Analysis
+## 50% stenosis prevalence
+```{r, warning=FALSE, echo = FALSE}
+#Create database with only studies for CTCA with filter
+#Load excel file
+ct <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+ct50 <- ct %>%
+  filter(scan== "ctca") %>%
+  drop_na(stenhiv50n)
+
+# Remove lai et al. 
+ct50 <- ct50[-c(7),]
+
+#create labels
+#remove et al. from data
+ct50$study<-gsub("et al.","",as.character(ct50$study))
+labs <- paste(ct50$study, ct50$year)
+
+#set up data fram for proportion of PLHIV with LGE
+ct50 <- ct50 %>% select(study, year, country, income, design, excludedcad, hivn_ct, stenhiv50n, controln_ct,stencon50n,  cd4, age_hiv, excludedcad, stableart)
+
+#replaace hoffman denominator 755 to 743
+ct50[6,7] <- 743
+
+sten.es <- escalc(xi = stenhiv50n, ni = hivn_ct, measure = "PLO", data = ct50, slab= labs)
+sten.pes <- rma(yi, vi, data = sten.es)
+
+#write own transformation which is inverse of LOGIT * 100
+mytransf <- function(x)
+    (transf.ilogit(x)) * 100
+
+
+forest(sten.pes, transf = mytransf,
+       mlab= "",
+       at = c(0,20,40,60,80,100),
+       digits = 1, header= TRUE,
+       ilab = cbind(ct50$stenhiv50n, ct50$hivn_ct),
+       ilab.xpos = c(-45,-25),
+       xlim = c(-110, 150),
+       xlab = "Prevalence of coronary stenosis (%)",
+       order = ct50$year)
+
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-110, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(sten.pes$QE, digits=2, format="f")), ",p = ", .(formatC(sten.pes$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(sten.pes$I2, digits=1, format="f")), "%)")))
+text(c(-45,-25), 17, c("Cases", "N"), cex=0.75)
+mtext("C", side = 3, line = 1)
+```
+
+## Risk of 50% stenosis
+
+```{r}
+# Load data with odds ratios
+#Load excel file
+orf <- read_excel("hiv_sr_databse.xlsx",     
+                             sheet = "all")
+
+#Create database with only studies for CTCA with filter
+orf <- orf %>%
+  filter(scan== "ctca")%>%
+  drop_na(stencon50n)%>%
+  select(study, year, hivn_ct, stenhiv50n, 
+         controln_ct, stencon50n, or_sten, pval_sten, 
+         ci.lb_sten, ci.ub_sten, adjust)%>%
+  mutate(
+    hneg = (hivn_ct - stenhiv50n),
+    cneg = (controln_ct - stencon50n)) %>%
+  rename(hpos = stenhiv50n, cpos = stencon50n, 
+         hiv.n = hivn_ct, con.n = controln_ct, or = or_sten, 
+         pval = pval_sten, ci.lb= ci.lb_sten, ci.ub = ci.ub_sten)%>%
+  select(study, year, hpos, hneg, hiv.n, cpos, cneg, con.n, or, pval, ci.lb, ci.ub)
+
+#remove et al. from data
+orf$study<-gsub("et al.","",as.character(orf$study))
+labs <- paste(orf$study, orf$year)
+
+# Remove Lai numbers
+orf[c(5), c(3:8)] <- NA
+# Creat label databse
+orflabs <- orf
+#remove Post numbers
+orf[c(6), c(3:8)] <- NA
+
+
+
+# Calcuate odds ratios using escalc 
+es.50 <- escalc(measure= "OR", ai = hpos, bi = hneg, ci = cpos,
+              di = cneg, 
+              slab= labs,
+              data = orf)
+
+#Replace the missing values withthe log odds ratios 
+
+es.50$yi <- replmiss(es.50$yi, log(es.50$or))
+# Convert the p-values into z values
+es.50$zi <- sign(es.50$yi) * qnorm(es.50$pval/2, lower.tail=FALSE)
+# Test statistics can be converted to standard errors
+es.50$sei <- es.50$yi / es.50$zi
+# CI bounds can be converted to SE
+es.50$sei <- replmiss(es.50$sei, with(es.50, (log(ci.ub) - log(ci.lb))/(2*1.96)))
+# Missing values with the vi variable can be replaced
+es.50$vi <- replmiss(es.50$vi, es.50$sei^2)
+# Delete variables
+es.50$zi <- es.50$sei <- NULL
+
+
+
+pes.50 <- rma(yi, vi, data = es.50)
+
+
+# Forest plot of odds ratio
+forest(pes.50,
+       addpred=TRUE, header=TRUE,
+       atransf=exp,
+       order = orf$year,
+       xlim= c(10, -13),
+      ilab=cbind(orflabs$hpos, orflabs$hneg, 
+                 orflabs$cpos, orflabs$cneg),
+       ilab.xpos=c(-7.3,-6.0,-4.3,-3.0),
+      mlab = "",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 30)))
+
+#Add text to label columns
+text(c(-7.3,-6.0,-4.3,-3.0), 12.5, c("Pos", "Neg", "Pos", "Neg"), cex=0.75)
+text(c(-6.65, -3.65), 13.5, c("HIV+", "HIV-"), font =2, cex = 0.75)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-12.9, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(pes.50$QE, digits=2, format="f")), ", df = ", .(pes.50$k - pes.50$p),
+     ", p = ", .(formatC(pes.50$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(pes.50$I2, digits=1, format="f")), "%)")))
+mtext("D", side= 3, line= 1)
+```
+
+
+
+```{r, warning=FALSE, echo = FALSE}
+#Perform sensitivity analysis with studies that did not adjust removed.
+# Remove: abdelmoniem, fitch, 
+
+res3sens <- rma(yi, vi, data = es.50, subset = (adjust == "yes"))
+
+forest(res3sens,
+       addpred=TRUE, header=TRUE,
+       atransf=exp,
+       xlim= c(10, -13),
+      ilab=cbind(or50$hivpos, or50$hivneg, 
+                 or50$conpos, or50$conneg),
+       ilab.xpos=c(-7.3,-6.0,-4.3,-3.0),
+      mlab = "",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 100)))
+
+#Add text to label columns
+text(c(-7.3,-6.0,-4.3,-3.0), 9.5, c("Pos", "Neg", "Pos", "Neg"), cex=0.75)
+text(c(-6.65, -3.65), 10.3, c("PLHIV", "Controls"), font =2)
+
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-12.9, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res3sens$QE, digits=2, format="f")), ", df = ", .(res3sens$k - res3sens$p),
+     ", p = ", .(formatC(res3sens$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res3sens$I2, digits=1, format="f")), "%)")))
+```
+
+
+```{r, warning=FALSE, echo = FALSE}
+# Remove Senoner ett al.
+res3sens2 <- rma(yi, vi, data = or.50, subset = c(2:3, 5:6, 8:10))
+predict(res3sens2, transf = exp)
+forest(res3sens2,
+       addpred=TRUE, header=TRUE,
+       atransf=exp,
+       xlim= c(10, -13),
+      ilab=cbind(or50$hivpos, or50$hivneg, 
+                 or50$conpos, or50$conneg),
+       ilab.xpos=c(-7.3,-6.0,-4.3,-3.0),
+      mlab = "",
+      xlab = c("Odds Ratio"),
+        at=log(c(0.1, .25, 1, 10, 100)))
+## add text with Q-value, dfs, p-value, and I^2 statistic
+text(-12.9, -1, pos=4, cex=0.75, bquote(paste("RE Model (Q = ",
+     .(formatC(res3sens2$QE, digits=2, format="f")), ", df = ", .(res3sens2$k - res3sens2$p),
+     ", p = ", .(formatC(res3sens2$QEp, digits=2, format="f")), "; ", I^2, " = ",
+     .(formatC(res3sens2$I2, digits=1, format="f")), "%)")))
+
+```
+
+
+# Funnell Plots CTCA
+```{r}
+
+funnel(any.pes, atransf = mytransf, xlab = "Prevalence of coronary plaque (%)", digits = 1)
+mtext("B", side =3, line = 1)
+regtest(any.pes, model="lm", predictor="sei", digits = 1)
+
+```
